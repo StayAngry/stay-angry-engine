@@ -1,20 +1,20 @@
-"""Command Line Interface for the Visual Intelligence & Cinematic Effects Engine."""
+﻿"""Command Line Interface for the Stay Angry Engine (SAE)."""
 
 import argparse
 import asyncio
-import json
 import sys
 from pathlib import Path
 
-from sae.creative.models import EditingBlueprint, PlatformFormat
+from sae.creative.engine import CreativeEditingEngine
+from sae.creative.models import PlatformFormat
 from sae.database import DatabaseManager
-from sae.effects.engine import CinematicEffectsEngine
+from sae.effects.engine import AdvancedCreativeEngine
 from sae.effects.models import CreativeLookType
 from sae.events import EventBus
+from sae.integrations.engine import EditorIntegrationEngine
+from sae.integrations.models import EditorType
 from sae.media.manager import MediaAssetManager
-from sae.render.engine import MediaProcessingEngine
-from sae.resources import ResourceManager
-from sae.vision.engine import AdvancedVideoIntelligenceEngine
+from sae.render.backend import FFmpegMediaBackend
 
 
 def setup_parser() -> argparse.ArgumentParser:
@@ -58,84 +58,86 @@ def setup_parser() -> argparse.ArgumentParser:
     verify_parser.add_argument("--width", type=int, default=1080, help="Expected video width")
     verify_parser.add_argument("--height", type=int, default=1920, help="Expected video height")
 
+    # Command: export
+    export_parser = subparsers.add_parser("export", help="Export blueprint to NLE project file (DaVinci Resolve EDL or Premiere FCPXML)")
+    export_parser.add_argument(
+        "--target",
+        "-t",
+        type=str,
+        default="davinci",
+        choices=["davinci", "premiere"],
+        help="Target NLE editor format",
+    )
+    export_parser.add_argument("--title", type=str, default="Cinematic Project", help="Timeline project title")
+    export_parser.add_argument("--duration", "-d", type=float, default=15.0, help="Target duration in seconds")
+    export_parser.add_argument("--output-dir", "-o", type=Path, default=Path("output"), help="Export directory")
+    export_parser.add_argument("--dry-run", action="store_true", help="Generate manifest without writing to disk")
+
     return parser
 
 
+def get_core_services(
+    export_root: Path | None = None,
+    work_dir: Path | None = None,
+) -> tuple[MediaAssetManager, CreativeEditingEngine, AdvancedCreativeEngine, EditorIntegrationEngine]:
+    base_dir = work_dir or Path(".sae_cache")
+    base_dir.mkdir(parents=True, exist_ok=True)
+    db = DatabaseManager(base_dir / "sae_cli.db")
+    bus = EventBus()
+    media_mgr = MediaAssetManager(db, bus, base_dir / "media")
+    creative = CreativeEditingEngine(media_mgr)
+    effects = AdvancedCreativeEngine()
+    editor_engine = EditorIntegrationEngine(media_mgr, export_root or (base_dir / "projects"))
+    return media_mgr, creative, effects, editor_engine
+
+
 async def run_analyze(args: argparse.Namespace) -> int:
-    media_path = args.media_path.resolve()
-    if not media_path.exists():
-        print(f"[ERROR] Asset not found at: {media_path}", file=sys.stderr)
+    from sae.vision.engine import VisionIntelligenceEngine
+
+    if not args.media_path.exists():
+        print(f"[!] Error: Media file not found at {args.media_path}", file=sys.stderr)
         return 1
 
-    print(f"[*] Analyzing asset: {media_path.name}...")
-    db = DatabaseManager(Path("sae_workspace.db"))
-    bus = EventBus()
-    media_mgr = MediaAssetManager(db, bus, cache_dir=Path("cache"))
-    vision_engine = AdvancedVideoIntelligenceEngine(media_mgr)
-
-    report = await vision_engine.analyze_asset(str(media_path))
-    output_data = report.model_dump() if hasattr(report, "model_dump") else report.dict()
+    vision = VisionIntelligenceEngine()
+    print(f"[*] Analyzing media asset: {args.media_path.name}...")
+    report = await vision.analyze_clip(args.media_path)
 
     if args.output:
         args.output.parent.mkdir(parents=True, exist_ok=True)
-        args.output.write_text(json.dumps(output_data, indent=2), encoding="utf-8")
-        print(f"[+] Intelligence report saved to: {args.output}")
+        args.output.write_text(report.model_dump_json(indent=2), encoding="utf-8")
+        print(f"[+] Analysis report saved to {args.output}")
     else:
-        print(json.dumps(output_data, indent=2))
-
+        print(report.model_dump_json(indent=2))
     return 0
 
 
 async def run_process(args: argparse.Namespace) -> int:
-    media_path = args.media_path.resolve()
-    if not media_path.exists():
-        print(f"[ERROR] Asset not found at: {media_path}", file=sys.stderr)
+    from sae.render.engine import AutonomousRenderEngine
+
+    if not args.media_path.exists():
+        print(f"[!] Error: Media file not found at {args.media_path}", file=sys.stderr)
         return 1
 
-    args.output_dir.mkdir(parents=True, exist_ok=True)
-    db = DatabaseManager(Path("sae_workspace.db"))
-    bus = EventBus()
-    media_mgr = MediaAssetManager(db, bus, cache_dir=Path("cache"))
-    res_mgr = ResourceManager()
+    _, creative, effects, _ = get_core_services()
+    render_backend = FFmpegMediaBackend(output_dir=args.output_dir)
+    render_engine = AutonomousRenderEngine(backend=render_backend)
 
-    format_mapping = {
-        "VERTICAL_SHORT": (1080, 1920, PlatformFormat.VERTICAL_SHORT),
-        "HORIZONTAL_FULL": (1920, 1080, PlatformFormat.HORIZONTAL_FULL if hasattr(PlatformFormat, "HORIZONTAL_FULL") else PlatformFormat.VERTICAL_SHORT),
-        "SQUARE": (1080, 1080, PlatformFormat.VERTICAL_SHORT),
-    }
-    width, height, target_format = format_mapping.get(args.format, (1080, 1920, PlatformFormat.VERTICAL_SHORT))
+    aspect_enum = getattr(PlatformFormat, args.format, PlatformFormat.VERTICAL_SHORT)
+    look_enum = CreativeLookType(args.look)
 
-    print(f"[*] Step 1/4: Analyzing visual intelligence for {media_path.name}...")
-    vision_engine = AdvancedVideoIntelligenceEngine(media_mgr)
-    report = await vision_engine.analyze_asset(str(media_path))
-
-    print(f"[*] Step 2/4: Generating editing blueprint ({args.format} - {width}x{height})...")
-    blueprint = EditingBlueprint(
-        blueprint_id=f"bp_{media_path.stem}",
+    print(f"[*] Generating editing blueprint for '{args.title}'...")
+    blueprint = creative.generate_reel_blueprint(
         title=args.title,
-        format=target_format,
-        width=width,
-        height=height,
-        fps=60.0,
-        target_duration_sec=args.duration,
+        target_duration=args.duration,
+        format_type=aspect_enum,
     )
 
-    print(f"[*] Step 3/4: Applying creative look treatment ({args.look})...")
-    effects_engine = CinematicEffectsEngine()
-    treatment = effects_engine.generate_treatment(
-        blueprint=blueprint,
-        intelligence=report,
-        look=CreativeLookType(args.look),
-    )
-    blueprint = effects_engine.apply_treatment(blueprint, treatment)
+    print(f"[*] Synthesizing creative effects treatment ({look_enum.value})...")
+    treatment = effects.generate_treatment(blueprint=blueprint, look=look_enum)
 
-    print(f"[*] Step 4/4: Rendering media output via backend pipeline...")
-    render_engine = MediaProcessingEngine(
-        output_dir=args.output_dir,
-        resource_manager=res_mgr,
-    )
-    rendered_file = await render_engine.render_blueprint(blueprint)
-
+    print("[*] Dispatching autonomous render job...")
+    result = await render_engine.render_blueprint(blueprint=blueprint, treatment=treatment)
+    rendered_file = result.output_path
     print(f"[+] Render complete! Output generated at: {rendered_file}")
     return 0
 
@@ -160,6 +162,28 @@ async def run_verify(args: argparse.Namespace) -> int:
         return 1
 
 
+async def run_export(args: argparse.Namespace) -> int:
+    _, creative, effects, editor_engine = get_core_services(export_root=args.output_dir)
+
+    bp = creative.generate_reel_blueprint(title=args.title, target_duration=args.duration)
+    treatment = effects.generate_treatment(bp)
+
+    editor_type = EditorType.DAVINCI_RESOLVE if args.target == "davinci" else EditorType.PREMIERE_PRO
+
+    manifest, out_path = editor_engine.export_to_editor(
+        blueprint=bp,
+        treatment=treatment,
+        editor_type=editor_type,
+        dry_run=args.dry_run,
+    )
+
+    if args.dry_run or out_path is None:
+        print(f"[+] Dry run export successful for manifest ID: {manifest.manifest_id}")
+    else:
+        print(f"[+] Project successfully exported to: {out_path}")
+    return 0
+
+
 def main() -> None:
     parser = setup_parser()
     args = parser.parse_args()
@@ -170,6 +194,8 @@ def main() -> None:
         sys.exit(asyncio.run(run_process(args)))
     elif args.command == "verify":
         sys.exit(asyncio.run(run_verify(args)))
+    elif args.command == "export":
+        sys.exit(asyncio.run(run_export(args)))
 
 
 if __name__ == "__main__":

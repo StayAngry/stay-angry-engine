@@ -1,4 +1,4 @@
-"""DaVinci Resolve Adapter generating CMX 3600 standard EDL and Resolve interchange manifests."""
+﻿"""DaVinci Resolve Adapter generating CMX 3600 standard EDL and Resolve interchange manifests."""
 
 import uuid
 from pathlib import Path
@@ -67,8 +67,9 @@ class DaVinciResolveAdapter(BaseEditorAdapter):
             )
 
         markers: list[TimelineMarker] = []
-        if treatment and treatment.pacing:
-            for beat in getattr(treatment.pacing, "beat_grid_sec", []):
+        pacing = getattr(treatment, "pacing", None) if treatment else None
+        if pacing:
+            for beat in getattr(pacing, "beat_grid_sec", []):
                 markers.append(
                     TimelineMarker(
                         time_sec=beat,
