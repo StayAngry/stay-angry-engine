@@ -6,7 +6,7 @@ import sys
 from pathlib import Path
 
 from sae.creative.engine import CreativeEditingEngine
-from sae.creative.models import PlatformFormat
+from sae.creative.models import CreativeStyleType, PlatformFormat
 from sae.database import DatabaseManager
 from sae.effects.engine import AdvancedCreativeEngine
 from sae.effects.models import CreativeLookType
@@ -46,11 +46,12 @@ def setup_parser() -> argparse.ArgumentParser:
         "-f",
         type=str,
         default="VERTICAL_SHORT",
-        choices=["VERTICAL_SHORT", "HORIZONTAL_FULL", "SQUARE"],
+        choices=["VERTICAL_SHORT", "HORIZONTAL_STANDARD", "SQUARE"],
         help="Target platform video aspect format",
     )
     process_parser.add_argument("--duration", "-d", type=float, default=15.0, help="Target duration in seconds")
     process_parser.add_argument("--output-dir", "-o", type=Path, default=Path("output"), help="Render output directory")
+    process_parser.add_argument("--auto-vision", action="store_true", help="Use multimodal vision intelligence for timeline cuts")
 
     # Command: verify
     verify_parser = subparsers.add_parser("verify", help="Verify integrity and resolution of a rendered file")
@@ -72,6 +73,8 @@ def setup_parser() -> argparse.ArgumentParser:
     export_parser.add_argument("--duration", "-d", type=float, default=15.0, help="Target duration in seconds")
     export_parser.add_argument("--output-dir", "-o", type=Path, default=Path("output"), help="Export directory")
     export_parser.add_argument("--dry-run", action="store_true", help="Generate manifest without writing to disk")
+    export_parser.add_argument("--asset-id", type=str, default="default_asset_001.mp4", help="Asset ID for vision extraction")
+    export_parser.add_argument("--auto-vision", action="store_true", help="Use multimodal vision intelligence for timeline cuts")
 
     return parser
 
@@ -125,12 +128,20 @@ async def run_process(args: argparse.Namespace) -> int:
     aspect_enum = getattr(PlatformFormat, args.format, PlatformFormat.VERTICAL_SHORT)
     look_enum = CreativeLookType(args.look)
 
-    print(f"[*] Generating editing blueprint for '{args.title}'...")
-    blueprint = creative.generate_reel_blueprint(
-        title=args.title,
-        target_duration=args.duration,
-        format_type=aspect_enum,
-    )
+    if args.auto_vision:
+        print(f"[*] Ingesting multimodal vision intelligence for '{args.media_path.name}'...")
+        blueprint = creative.ingest_vision_intelligence(
+            asset_id=args.media_path.name,
+            target_duration=args.duration,
+            format_type=aspect_enum,
+        )
+    else:
+        print(f"[*] Generating editing blueprint for '{args.title}'...")
+        blueprint = creative.generate_reel_blueprint(
+            title=args.title,
+            target_duration=args.duration,
+            format_type=aspect_enum,
+        )
 
     print(f"[*] Synthesizing creative effects treatment ({look_enum.value})...")
     treatment = effects.generate_treatment(blueprint=blueprint, look=look_enum)
@@ -165,9 +176,16 @@ async def run_verify(args: argparse.Namespace) -> int:
 async def run_export(args: argparse.Namespace) -> int:
     _, creative, effects, editor_engine = get_core_services(export_root=args.output_dir)
 
-    bp = creative.generate_reel_blueprint(title=args.title, target_duration=args.duration)
-    treatment = effects.generate_treatment(bp)
+    if args.auto_vision:
+        print(f"[*] Generating blueprint with multimodal vision ingestion for '{args.asset_id}'...")
+        bp = creative.ingest_vision_intelligence(
+            asset_id=args.asset_id,
+            target_duration=args.duration,
+        )
+    else:
+        bp = creative.generate_reel_blueprint(title=args.title, target_duration=args.duration)
 
+    treatment = effects.generate_treatment(bp)
     editor_type = EditorType.DAVINCI_RESOLVE if args.target == "davinci" else EditorType.PREMIERE_PRO
 
     manifest, out_path = editor_engine.export_to_editor(
