@@ -1,0 +1,57 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE xmeml>
+<xmeml version="4">
+  <sequence id="bp_5235760f">
+    <name>Solo Leveling Action Edit</name>
+    <duration>720</duration>
+    <rate>
+      <timebase>60</timebase>
+    </rate>
+    <media>
+      <video>
+        <track>
+          <clipitem>
+            <name>clip_1</name>
+            <start>0</start>
+            <end>180</end>
+            <in>0</in>
+            <out>180</out>
+            <file>
+              <pathurl>assets/mock_asset_vid_1.mp4</pathurl>
+            </file>
+          </clipitem>
+          <clipitem>
+            <name>clip_2</name>
+            <start>180</start>
+            <end>360</end>
+            <in>0</in>
+            <out>180</out>
+            <file>
+              <pathurl>assets/mock_asset_vid_2.mp4</pathurl>
+            </file>
+          </clipitem>
+          <clipitem>
+            <name>clip_3</name>
+            <start>360</start>
+            <end>540</end>
+            <in>0</in>
+            <out>180</out>
+            <file>
+              <pathurl>assets/mock_asset_vid_3.mp4</pathurl>
+            </file>
+          </clipitem>
+          <clipitem>
+            <name>clip_4</name>
+            <start>540</start>
+            <end>720</end>
+            <in>0</in>
+            <out>180</out>
+            <file>
+              <pathurl>assets/mock_asset_vid_4.mp4</pathurl>
+            </file>
+          </clipitem>
+        </track>
+      </video>
+    </media>
+  </sequence>
+</xmeml>

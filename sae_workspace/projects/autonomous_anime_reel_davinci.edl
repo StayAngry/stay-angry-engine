@@ -1,0 +1,10 @@
+TITLE: Autonomous Anime Reel
+FCM: NON-DROP FRAME
+001  AX       V     C        00:00:00:00 00:00:03:00 00:00:00:00 00:00:03:00
+* FROM CLIP NAME: clip_1
+002  AX       V     C        00:00:00:00 00:00:03:00 00:00:00:00 00:00:03:00
+* FROM CLIP NAME: clip_2
+003  AX       V     C        00:00:00:00 00:00:03:00 00:00:00:00 00:00:03:00
+* FROM CLIP NAME: clip_3
+004  AX       V     C        00:00:00:00 00:00:03:00 00:00:00:00 00:00:03:00
+* FROM CLIP NAME: clip_4

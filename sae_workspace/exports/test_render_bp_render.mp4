@@ -1,0 +1,4 @@
+SAE Render Manifest
+Blueprint: test_render_bp
+Resolution: 1080x1920 @ 60.0 FPS
+Duration: 12.0s

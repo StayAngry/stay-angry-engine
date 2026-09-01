@@ -1,0 +1,57 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE xmeml>
+<xmeml version="4">
+  <sequence id="bp_6eb224bd">
+    <name>Cinematic Anime Reel</name>
+    <duration>900</duration>
+    <rate>
+      <timebase>60</timebase>
+    </rate>
+    <media>
+      <video>
+        <track>
+          <clipitem>
+            <name>clip_1</name>
+            <start>0</start>
+            <end>180</end>
+            <in>0</in>
+            <out>180</out>
+            <file>
+              <pathurl>C:\Users\user\OneDrive\Desktop\stay-angry-engine\sae_workspace\raw_media\Attention Please ! [ Date A Live V ] - EpicPlaysOfLordSensei (1080p, h264).mp4</pathurl>
+            </file>
+          </clipitem>
+          <clipitem>
+            <name>clip_2</name>
+            <start>180</start>
+            <end>360</end>
+            <in>0</in>
+            <out>180</out>
+            <file>
+              <pathurl>C:\Users\user\OneDrive\Desktop\stay-angry-engine\sae_workspace\raw_media\Reine merged with Mio [Date A Live V ] - EpicPlaysOfLordSensei (1080p, h264).mp4</pathurl>
+            </file>
+          </clipitem>
+          <clipitem>
+            <name>clip_3</name>
+            <start>360</start>
+            <end>540</end>
+            <in>0</in>
+            <out>180</out>
+            <file>
+              <pathurl>C:\Users\user\OneDrive\Desktop\stay-angry-engine\sae_workspace\raw_media\Shido is finally using Zafkiel [Date a Live V ] - EpicPlaysOfLordSensei (1080p, h264).mp4</pathurl>
+            </file>
+          </clipitem>
+          <clipitem>
+            <name>clip_4</name>
+            <start>540</start>
+            <end>720</end>
+            <in>0</in>
+            <out>180</out>
+            <file>
+              <pathurl>C:\Users\user\OneDrive\Desktop\stay-angry-engine\sae_workspace\raw_media\Shido kiss Nibelcole [Date A Live V] - EpicPlaysOfLordSensei (1080p, h264).mp4</pathurl>
+            </file>
+          </clipitem>
+        </track>
+      </video>
+    </media>
+  </sequence>
+</xmeml>
