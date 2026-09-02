@@ -17,7 +17,7 @@ from sae.creative.models import (
 )
 from sae.media.manager import MediaAssetManager
 from sae.vision.engine import AdvancedVideoIntelligenceEngine
-from sae.vision.models import CameraAngle, ShotType, VideoAnalysisReport
+from sae.vision.models import CameraAngle, CameraShotType, ShotDecomposition, VideoAnalysisReport
 
 
 class CreativeEditingEngine:
@@ -61,7 +61,7 @@ class CreativeEditingEngine:
                 duration_sec=target_duration,
             )
 
-        # 2. Derive Cut Points from Transients or Interval Fallback
+        # 2. Derive Cut Points from Transients or Fallback
         cut_points: list[float] = []
         if report and report.beats:
             min_cut_gap = 1.0
@@ -82,7 +82,6 @@ class CreativeEditingEngine:
                 cut_points.append(round(curr, 2))
                 curr += step
 
-        # Append final boundary
         cut_points.append(target_duration)
 
         # 3. Assemble Timeline Clips
@@ -164,7 +163,7 @@ class CreativeEditingEngine:
         report: VideoAnalysisReport | None = None,
         snap_to_beats: bool = True,
     ) -> EditingBlueprint:
-        """Enrich blueprint generation by honoring camera motion, key moments, and beat synchronization."""
+        """Auto-directs timeline construction synthesizing visual shot classification and audio transients."""
         blueprint_id = f"bp_vision_{uuid.uuid4().hex[:8]}"
 
         res_map = {
@@ -174,7 +173,7 @@ class CreativeEditingEngine:
         }
         width, height = res_map.get(format_type, (1080, 1920))
 
-        # 1. Resolve Audio Beats if snapping enabled
+        # 1. Resolve Audio Beats
         audio_report = None
         if snap_to_beats and self.audio_engine:
             audio_report = self.audio_engine.analyze_audio_asset(
@@ -182,15 +181,25 @@ class CreativeEditingEngine:
                 duration_sec=target_duration,
             )
 
-        # 2. Determine cut boundary timestamps
+        # 2. Extract Available Vision Shots
+        available_shots: list[ShotDecomposition] = []
+        if report and report.scenes:
+            for scene in report.scenes:
+                available_shots.extend(scene.shots)
+
+        # 3. Determine Cut Boundaries based on Downbeats and Transients
         cut_points: list[float] = []
+        beat_map: dict[float, float] = {}  # timestamp -> beat energy
+
         if audio_report and audio_report.beats:
             min_gap = 1.0
             last_t = 0.0
             for b in audio_report.beats:
-                if (b.strength == BeatStrength.DOWNBEAT and (b.timestamp_sec - last_t) >= min_gap) or (b.timestamp_sec - last_t) >= 3.0:
+                gap = b.timestamp_sec - last_t
+                if (b.strength == BeatStrength.DOWNBEAT and gap >= min_gap) or gap >= 3.0:
                     if b.timestamp_sec < target_duration - 0.5:
                         cut_points.append(b.timestamp_sec)
+                        beat_map[b.timestamp_sec] = b.energy
                         last_t = b.timestamp_sec
 
         if not cut_points:
@@ -202,7 +211,7 @@ class CreativeEditingEngine:
 
         cut_points.append(target_duration)
 
-        # 3. Assemble Vision-classified Clips
+        # 4. Multimodal Synthesis (Audio Rhythmic Peaks + Vision Shot Types)
         clips: list[TimelineClip] = []
         start_t = 0.0
 
@@ -211,9 +220,29 @@ class CreativeEditingEngine:
             if dur <= 0.05:
                 continue
 
-            reason = f"Vision classified: Shot {i+1} paced for {style.value}."
+            # Check if this cut lands on a high-energy beat peak
+            rhythm_energy = beat_map.get(end_t, 0.5)
+            matched_shot = available_shots[i % len(available_shots)] if available_shots else None
+
+            # Calculate multimodal energy level
+            visual_energy = matched_shot.visual_energy if matched_shot else 0.65
+            combined_energy = round(min(1.0, (rhythm_energy * 0.5) + (visual_energy * 0.5)), 2)
+            if combined_energy <= 0.0:
+                combined_energy = 0.70
+
+            # Dynamic Camera Motion & Transition selection
+            is_high_impact = combined_energy >= 0.75 or (matched_shot and matched_shot.has_impact)
+            if is_high_impact:
+                motion = CameraMotionType.QUICK_ZOOM if hasattr(CameraMotionType, "QUICK_ZOOM") else CameraMotionType.SLOW_ZOOM_IN
+                trans = TransitionType.WHIP_PAN
+            else:
+                motion = CameraMotionType.SLOW_ZOOM_IN if i % 2 == 0 else CameraMotionType.STATIC
+                trans = TransitionType.HARD_CUT
+
+            shot_tag = matched_shot.shot_type.value if matched_shot else "MEDIUM"
+            reason = f"Vision classified: Shot {i+1} [{shot_tag}] paced for {style.value}."
             if snap_to_beats:
-                reason += " Beat snapped: True"
+                reason += f" Beat snapped: True (Energy: {combined_energy})"
 
             clips.append(
                 TimelineClip(
@@ -225,9 +254,9 @@ class CreativeEditingEngine:
                     timeline_end_sec=end_t,
                     track_index=1,
                     speed=1.0,
-                    camera_motion=CameraMotionType.SLOW_ZOOM_IN if i % 2 == 0 else CameraMotionType.STATIC,
-                    transition_in=TransitionType.HARD_CUT if i % 2 == 0 else TransitionType.WHIP_PAN,
-                    energy_level=0.85 if i % 2 == 1 else 0.70,
+                    camera_motion=motion,
+                    transition_in=trans,
+                    energy_level=combined_energy,
                     selection_reason=reason,
                 )
             )
