@@ -1,8 +1,6 @@
-"""Adobe Premiere Pro Adapter translating SAE blueprints to FCPXML/Premiere-compatible project structures."""
+﻿"""Adobe Premiere Pro FCPXML timeline integration adapter."""
 
 import os
-import shutil
-import uuid
 from pathlib import Path
 from sae.creative.models import EditingBlueprint
 from sae.effects.models import CreativeTreatmentBlueprint
@@ -18,7 +16,6 @@ from sae.integrations.models import (
 
 class PremiereAdapter(BaseEditorAdapter):
     def detect(self) -> EditorCapabilities:
-        # Check standard Windows paths for Adobe Premiere Pro
         prog_files = os.environ.get("ProgramFiles", "C:\\Program Files")
         premiere_dir = Path(prog_files) / "Adobe"
         is_installed = False
@@ -37,33 +34,34 @@ class PremiereAdapter(BaseEditorAdapter):
             supports_multitrack=True,
             supports_native_color=True,
             supports_keyframes=True,
-            supports_markers=True
+            supports_markers=True,
         )
 
     def translate_blueprint(
         self,
         blueprint: EditingBlueprint,
         treatment: CreativeTreatmentBlueprint | None = None,
-        asset_map: dict[str, str] | None = None
+        asset_map: dict[str, Path] | None = None,
     ) -> EditorProjectManifest:
         resolved_map = asset_map or {}
         v_mappings: list[ExportedClipMapping] = []
         a_mappings: list[ExportedClipMapping] = []
         markers: list[TimelineMarker] = []
 
-        # 1. Translate Video Clips
+        # 1. Translate Video Tracks
         for c in blueprint.video_clips:
+            resolved_p = resolved_map.get(c.asset_id, Path(f"assets/{c.asset_id}"))
             v_mappings.append(
                 ExportedClipMapping(
                     sae_clip_id=c.clip_id,
                     editor_item_id=f"pr_vid_{c.clip_id}",
-                    asset_path=resolved_map.get(c.asset_id, f"assets/{c.asset_id}.mp4"),
+                    asset_path=str(resolved_p.as_posix()),
                     track_index=c.track_index,
                     source_in_sec=c.source_in_sec,
                     source_out_sec=c.source_out_sec,
                     timeline_start_sec=c.timeline_start_sec,
                     timeline_end_sec=c.timeline_end_sec,
-                    speed=c.speed
+                    speed=c.speed,
                 )
             )
             # Add beat/cut markers
@@ -73,23 +71,24 @@ class PremiereAdapter(BaseEditorAdapter):
                     timestamp_sec=c.timeline_start_sec,
                     name=f"Cut: {c.clip_id}",
                     comment=c.selection_reason,
-                    color="CYAN"
+                    color="CYAN",
                 )
             )
 
         # 2. Translate Audio Tracks
         for a in blueprint.audio_clips:
+            resolved_a = resolved_map.get(a.asset_id, Path(f"assets/{a.asset_id}.wav"))
             a_mappings.append(
                 ExportedClipMapping(
                     sae_clip_id=a.audio_clip_id,
                     editor_item_id=f"pr_aud_{a.audio_clip_id}",
-                    asset_path=resolved_map.get(a.asset_id, f"assets/{a.asset_id}.wav"),
+                    asset_path=str(resolved_a.as_posix()),
                     track_index=a.track_index,
                     source_in_sec=a.source_in_sec,
                     source_out_sec=a.timeline_end_sec - a.timeline_start_sec,
                     timeline_start_sec=a.timeline_start_sec,
                     timeline_end_sec=a.timeline_end_sec,
-                    speed=1.0
+                    speed=1.0,
                 )
             )
 
@@ -103,18 +102,18 @@ class PremiereAdapter(BaseEditorAdapter):
                             timestamp_sec=eff.start_sec,
                             name=f"Impact: {eff.name}",
                             comment=eff.reason,
-                            color="RED"
+                            color="MAGENTA",
                         )
                     )
 
-        # 4. Generate XML payload
-        xml_content = self._generate_fcpxml(blueprint, v_mappings, markers)
+        xml_payload = self._generate_fcpxml(blueprint, v_mappings, a_mappings, markers, treatment)
 
         return EditorProjectManifest(
-            manifest_id=f"manifest_pr_{uuid.uuid4().hex[:8]}",
+            manifest_id=f"manifest_pr_{blueprint.blueprint_id[3:]}",
             editor_type=EditorType.PREMIERE_PRO,
+            blueprint_id=blueprint.blueprint_id,
             project_name=blueprint.title,
-            sequence_name=f"{blueprint.title}_Sequence",
+            sequence_name=blueprint.title,
             width=blueprint.width,
             height=blueprint.height,
             fps=blueprint.fps,
@@ -122,53 +121,133 @@ class PremiereAdapter(BaseEditorAdapter):
             video_clips=v_mappings,
             audio_clips=a_mappings,
             markers=markers,
-            xml_payload=xml_content
+            xml_payload=xml_payload,
         )
 
-    def _generate_fcpxml(self, bp: EditingBlueprint, clips: list[ExportedClipMapping], markers: list[TimelineMarker]) -> str:
+    def _generate_fcpxml(
+        self,
+        bp: EditingBlueprint,
+        v_clips: list[ExportedClipMapping],
+        a_clips: list[ExportedClipMapping],
+        markers: list[TimelineMarker],
+        treatment: CreativeTreatmentBlueprint | None = None,
+    ) -> str:
+        fps_int = int(bp.fps)
+        total_duration_frames = int(bp.target_duration_sec * bp.fps)
+
         lines = [
             '<?xml version="1.0" encoding="UTF-8"?>',
             '<!DOCTYPE xmeml>',
             '<xmeml version="4">',
             f'  <sequence id="{bp.blueprint_id}">',
             f'    <name>{bp.title}</name>',
-            f'    <duration>{int(bp.target_duration_sec * bp.fps)}</duration>',
+            f'    <duration>{total_duration_frames}</duration>',
             '    <rate>',
-            f'      <timebase>{int(bp.fps)}</timebase>',
+            f'      <timebase>{fps_int}</timebase>',
+            '      <ntsc>FALSE</ntsc>',
             '    </rate>',
             '    <media>',
             '      <video>',
-            '        <track>'
+            '        <format>',
+            '          <samplecharacteristics>',
+            f'            <width>{bp.width}</width>',
+            f'            <height>{bp.height}</height>',
+            '          </samplecharacteristics>',
+            '        </format>',
+            '        <track>',
         ]
 
-        for c in clips:
+        # Video Clips
+        for c in v_clips:
             start_frame = int(c.timeline_start_sec * bp.fps)
             end_frame = int(c.timeline_end_sec * bp.fps)
+            in_frame = int(c.source_in_sec * bp.fps)
+            out_frame = int(c.source_out_sec * bp.fps)
             lines.extend([
                 '          <clipitem>',
                 f'            <name>{c.sae_clip_id}</name>',
                 f'            <start>{start_frame}</start>',
                 f'            <end>{end_frame}</end>',
-                f'            <in>{int(c.source_in_sec * bp.fps)}</in>',
-                f'            <out>{int(c.source_out_sec * bp.fps)}</out>',
+                f'            <in>{in_frame}</in>',
+                f'            <out>{out_frame}</out>',
                 '            <file>',
                 f'              <pathurl>{c.asset_path}</pathurl>',
                 '            </file>',
-                '          </clipitem>'
             ])
+
+            # Color LUT filter if provided in blueprint
+            if bp.color_grade:
+                lines.extend([
+                    '            <filter>',
+                    '              <effect>',
+                    f'                <name>ColorGrade_{bp.color_grade.profile_name}</name>',
+                    '                <parameter>',
+                    '                  <name>Contrast</name>',
+                    f'                  <value>{bp.color_grade.contrast}</value>',
+                    '                </parameter>',
+                    '                <parameter>',
+                    '                  <name>Saturation</name>',
+                    f'                  <value>{bp.color_grade.saturation}</value>',
+                    '                </parameter>',
+                    '              </effect>',
+                    '            </filter>',
+                ])
+            lines.append('          </clipitem>')
 
         lines.extend([
             '        </track>',
             '      </video>',
-            '    </media>',
-            '  </sequence>',
-            '</xmeml>'
+            '      <audio>',
+            '        <track>',
         ])
+
+        # Audio Clips
+        for a in a_clips:
+            a_start = int(a.timeline_start_sec * bp.fps)
+            a_end = int(a.timeline_end_sec * bp.fps)
+            a_in = int(a.source_in_sec * bp.fps)
+            a_out = int(a.source_out_sec * bp.fps)
+            lines.extend([
+                '          <clipitem>',
+                f'            <name>{a.sae_clip_id}</name>',
+                f'            <start>{a_start}</start>',
+                f'            <end>{a_end}</end>',
+                f'            <in>{a_in}</in>',
+                f'            <out>{a_out}</out>',
+                '            <file>',
+                f'              <pathurl>{a.asset_path}</pathurl>',
+                '            </file>',
+                '          </clipitem>',
+            ])
+
+        lines.extend([
+            '        </track>',
+            '      </audio>',
+            '    </media>',
+        ])
+
+        # Sequence Timeline Markers
+        for m in markers:
+            m_frame = int(m.timestamp_sec * bp.fps)
+            lines.extend([
+                '    <marker>',
+                f'      <name>{m.name}</name>',
+                f'      <comment>{m.comment}</comment>',
+                f'      <in>{m_frame}</in>',
+                f'      <out>{m_frame}</out>',
+                f'      <color>{m.color}</color>',
+                '    </marker>',
+            ])
+
+        lines.extend([
+            '  </sequence>',
+            '</xmeml>',
+        ])
+
         return "\n".join(lines)
 
-    def export_project(self, manifest: EditorProjectManifest, export_dir: Path) -> Path:
-        export_dir.mkdir(parents=True, exist_ok=True)
-        filename = f"{manifest.project_name.lower().replace(' ', '_')}_premiere.xml"
-        out_path = export_dir / filename
-        out_path.write_text(manifest.xml_payload or "", encoding="utf-8")
-        return out_path
+    def export_project(self, manifest: EditorProjectManifest, output_dir: Path) -> Path:
+        output_dir.mkdir(parents=True, exist_ok=True)
+        file_path = output_dir / f"{manifest.manifest_id}.xml"
+        file_path.write_text(manifest.xml_payload or "", encoding="utf-8")
+        return file_path
