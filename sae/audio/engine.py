@@ -1,18 +1,50 @@
 ﻿"""Audio analysis engine extracting tempo, downbeats, and rhythmic transients."""
 
+import asyncio
+from concurrent.futures import ThreadPoolExecutor
 import math
 import struct
 import wave
 from pathlib import Path
 from sae.audio.models import AudioAnalysisReport, AudioBeat, BeatStrength
 from sae.media.manager import MediaAssetManager
+from sae.render.backend import FFmpegMediaBackend
 
 
 class AudioIntelligenceEngine:
     """Analyzes audio tracks to detect rhythmic transients and beat intervals."""
 
-    def __init__(self, media_manager: MediaAssetManager | None = None):
+    def __init__(
+        self,
+        media_manager: MediaAssetManager | None = None,
+        backend: FFmpegMediaBackend | None = None,
+    ):
         self.media_manager = media_manager
+        self.backend = backend or FFmpegMediaBackend(Path(".sae_cache/audio_extracted"))
+
+    async def analyze_audio_asset_async(
+        self,
+        asset_id: str,
+        duration_sec: float = 15.0,
+        bpm: float = 120.0,
+    ) -> AudioAnalysisReport:
+        """Asynchronously extract beat timestamps, demuxing container audio if needed."""
+        audio_path = Path(asset_id)
+
+        # 1. Direct WAV processing
+        if audio_path.exists() and audio_path.suffix.lower() == ".wav":
+            return self.analyze_wav_file(audio_path, fallback_bpm=bpm)
+
+        # 2. Demux container video audio
+        if audio_path.exists() and audio_path.suffix.lower() in (".mp4", ".mov", ".mkv", ".avi"):
+            try:
+                extracted_wav = await self.backend.extract_audio_stream(audio_path)
+                return self.analyze_wav_file(extracted_wav, fallback_bpm=bpm)
+            except Exception:
+                pass
+
+        # 3. Fallback interval calculation
+        return self._build_synthetic_report(asset_id, duration_sec, bpm)
 
     def analyze_audio_asset(
         self,
@@ -20,17 +52,26 @@ class AudioIntelligenceEngine:
         duration_sec: float = 15.0,
         bpm: float = 120.0,
     ) -> AudioAnalysisReport:
-        """Extract beat timestamps and energy profile for a given audio track."""
-        audio_path = Path(asset_id)
-        if audio_path.exists() and audio_path.suffix.lower() == ".wav":
-            return self.analyze_wav_file(audio_path, fallback_bpm=bpm)
+        """Synchronous wrapper for audio asset extraction and analysis."""
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = None
 
-        # Fallback interval calculation
+        if loop and loop.is_running():
+            with ThreadPoolExecutor(max_workers=1) as pool:
+                return pool.submit(
+                    lambda: asyncio.run(self.analyze_audio_asset_async(asset_id, duration_sec, bpm))
+                ).result()
+        else:
+            return asyncio.run(self.analyze_audio_asset_async(asset_id, duration_sec, bpm))
+
+    def _build_synthetic_report(self, asset_id: str, duration_sec: float, bpm: float) -> AudioAnalysisReport:
         interval = 60.0 / bpm
         beats: list[AudioBeat] = []
         current = interval
-
         idx = 1
+
         while current < duration_sec:
             is_downbeat = (idx % 4 == 0)
             beats.append(
@@ -71,7 +112,6 @@ class AudioIntelligenceEngine:
             energies: list[float] = []
             timestamps: list[float] = []
 
-            # Unpack 16-bit PCM (most common format)
             fmt = "<" + ("h" * n_channels)
             frame_stride = sampwidth * n_channels
 
