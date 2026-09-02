@@ -228,11 +228,19 @@ class MockMediaBackend(BaseMediaBackend):
         out_file.parent.mkdir(parents=True, exist_ok=True)
 
         subs = subtitle_path or getattr(blueprint, "subtitle_path", None)
-        manifest = f"MOCK_RENDER:{job_id}:SUBS={subs}"
-        out_file.write_text(manifest, encoding="utf-8")
-
         dur = getattr(blueprint, "target_duration_sec", 5.0)
         fps = getattr(blueprint, "fps", 30.0)
+        w = getattr(blueprint, "width", 1080)
+        h = getattr(blueprint, "height", 1920)
+
+        manifest = (
+            f"SAE Render Manifest\n"
+            f"MOCK_RENDER:{job_id}:SUBS={subs}\n"
+            f"Resolution: {w}x{h}\n"
+            f"Duration: {dur}s\n"
+            f"Subtitles: {subs or 'None'}\n"
+        )
+        out_file.write_text(manifest, encoding="utf-8")
 
         return RenderResult(
             job_id=job_id,
