@@ -49,4 +49,6 @@ class WorkflowResult(BaseModel):
     editor_export_path: str | None = None
     progress_log: list[str] = Field(default_factory=list)
     quality_score: float = 94.5
+    loudness_calibrated: bool = False
+    subtitle_track_path: str | None = None
     completed_at: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
