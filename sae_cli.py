@@ -1,12 +1,13 @@
-"""Command Line Interface for the Stay Angry Engine (SAE)."""
+﻿"""Command Line Interface for the Stay Angry Engine (SAE)."""
 
 import argparse
 import asyncio
 import sys
 from pathlib import Path
 
+from sae.audio.engine import AudioIntelligenceEngine
 from sae.creative.engine import CreativeEditingEngine
-from sae.creative.models import PlatformFormat
+from sae.creative.models import CreativeStyleType, PlatformFormat
 from sae.database import DatabaseManager
 from sae.effects.engine import AdvancedCreativeEngine
 from sae.effects.models import CreativeLookType
@@ -15,6 +16,9 @@ from sae.integrations.engine import EditorIntegrationEngine
 from sae.integrations.models import EditorType
 from sae.media.manager import MediaAssetManager
 from sae.render.backend import FFmpegMediaBackend
+from sae.render.engine import MediaProcessingEngine
+from sae.render.verifier import MediaOutputVerifier, RenderVerificationError
+from sae.vision.engine import AdvancedVideoIntelligenceEngine
 
 
 def setup_parser() -> argparse.ArgumentParser:
@@ -46,11 +50,13 @@ def setup_parser() -> argparse.ArgumentParser:
         "-f",
         type=str,
         default="VERTICAL_SHORT",
-        choices=["VERTICAL_SHORT", "HORIZONTAL_FULL", "SQUARE"],
+        choices=["VERTICAL_SHORT", "HORIZONTAL_STANDARD", "SQUARE"],
         help="Target platform video aspect format",
     )
     process_parser.add_argument("--duration", "-d", type=float, default=15.0, help="Target duration in seconds")
     process_parser.add_argument("--output-dir", "-o", type=Path, default=Path("output"), help="Render output directory")
+    process_parser.add_argument("--auto-vision", action="store_true", help="Use multimodal vision intelligence for timeline cuts")
+    process_parser.add_argument("--snap-beats", action="store_true", help="Snap vision cut boundaries to musical tempo transients")
 
     # Command: verify
     verify_parser = subparsers.add_parser("verify", help="Verify integrity and resolution of a rendered file")
@@ -72,6 +78,9 @@ def setup_parser() -> argparse.ArgumentParser:
     export_parser.add_argument("--duration", "-d", type=float, default=15.0, help="Target duration in seconds")
     export_parser.add_argument("--output-dir", "-o", type=Path, default=Path("output"), help="Export directory")
     export_parser.add_argument("--dry-run", action="store_true", help="Generate manifest without writing to disk")
+    export_parser.add_argument("--asset-id", type=str, default="default_asset_001.mp4", help="Asset ID for vision extraction")
+    export_parser.add_argument("--auto-vision", action="store_true", help="Use multimodal vision intelligence for timeline cuts")
+    export_parser.add_argument("--snap-beats", action="store_true", help="Snap vision cut boundaries to musical tempo transients")
 
     return parser
 
@@ -79,28 +88,24 @@ def setup_parser() -> argparse.ArgumentParser:
 def get_core_services(
     export_root: Path | None = None,
     work_dir: Path | None = None,
-) -> tuple[MediaAssetManager, CreativeEditingEngine, AdvancedCreativeEngine, EditorIntegrationEngine]:
+) -> tuple[MediaAssetManager, CreativeEditingEngine, AdvancedCreativeEngine, EditorIntegrationEngine, AudioIntelligenceEngine]:
     base_dir = work_dir or Path(".sae_cache")
     base_dir.mkdir(parents=True, exist_ok=True)
     db = DatabaseManager(base_dir / "sae_cli.db")
     bus = EventBus()
     media_mgr = MediaAssetManager(db, bus, base_dir / "media")
-    creative = CreativeEditingEngine(media_mgr)
+    audio = AudioIntelligenceEngine(media_mgr)
+    creative = CreativeEditingEngine(media_mgr, audio_engine=audio)
     effects = AdvancedCreativeEngine()
     editor_engine = EditorIntegrationEngine(media_mgr, export_root or (base_dir / "projects"))
-    return media_mgr, creative, effects, editor_engine
+    return media_mgr, creative, effects, editor_engine, audio
 
 
 async def run_analyze(args: argparse.Namespace) -> int:
-    from sae.vision.engine import VisionIntelligenceEngine
-
-    if not args.media_path.exists():
-        print(f"[!] Error: Media file not found at {args.media_path}", file=sys.stderr)
-        return 1
-
-    vision = VisionIntelligenceEngine()
+    media_mgr, _, _, _, _ = get_core_services()
+    vision = AdvancedVideoIntelligenceEngine(media_manager=media_mgr)
     print(f"[*] Analyzing media asset: {args.media_path.name}...")
-    report = await vision.analyze_clip(args.media_path)
+    report = vision.analyze_asset(args.media_path.name)
 
     if args.output:
         args.output.parent.mkdir(parents=True, exist_ok=True)
@@ -112,41 +117,41 @@ async def run_analyze(args: argparse.Namespace) -> int:
 
 
 async def run_process(args: argparse.Namespace) -> int:
-    from sae.render.engine import AutonomousRenderEngine
-
-    if not args.media_path.exists():
-        print(f"[!] Error: Media file not found at {args.media_path}", file=sys.stderr)
-        return 1
-
-    _, creative, effects, _ = get_core_services()
-    render_backend = FFmpegMediaBackend(output_dir=args.output_dir)
-    render_engine = AutonomousRenderEngine(backend=render_backend)
+    _, creative, effects, _, _ = get_core_services()
+    backend = FFmpegMediaBackend(args.output_dir)
+    render_engine = MediaProcessingEngine(workspace_root=args.output_dir, backend=backend)
 
     aspect_enum = getattr(PlatformFormat, args.format, PlatformFormat.VERTICAL_SHORT)
     look_enum = CreativeLookType(args.look)
 
-    print(f"[*] Generating editing blueprint for '{args.title}'...")
-    blueprint = creative.generate_reel_blueprint(
-        title=args.title,
-        target_duration=args.duration,
-        format_type=aspect_enum,
-    )
+    if args.auto_vision:
+        print(f"[*] Ingesting multimodal vision intelligence for '{args.media_path.name}' (snap_beats={args.snap_beats})...")
+        blueprint = creative.ingest_vision_intelligence(
+            asset_id=args.media_path.name,
+            target_duration=args.duration,
+            format_type=aspect_enum,
+            snap_to_beats=args.snap_beats,
+        )
+    else:
+        print(f"[*] Generating editing blueprint for '{args.title}'...")
+        blueprint = creative.generate_reel_blueprint(
+            title=args.title,
+            target_duration=args.duration,
+            format_type=aspect_enum,
+        )
 
     print(f"[*] Synthesizing creative effects treatment ({look_enum.value})...")
     treatment = effects.generate_treatment(blueprint=blueprint, look=look_enum)
 
     print("[*] Dispatching autonomous render job...")
-    result = await render_engine.render_blueprint(blueprint=blueprint, treatment=treatment)
-    rendered_file = result.output_path
+    rendered_file = await render_engine.render_blueprint(blueprint=blueprint)
     print(f"[+] Render complete! Output generated at: {rendered_file}")
     return 0
 
 
 async def run_verify(args: argparse.Namespace) -> int:
-    from sae.render.verifier import RenderVerificationError, RenderVerifier
-
     rendered_path = args.rendered_file.resolve()
-    verifier = RenderVerifier()
+    verifier = MediaOutputVerifier()
 
     try:
         await verifier.verify_output(
@@ -163,11 +168,19 @@ async def run_verify(args: argparse.Namespace) -> int:
 
 
 async def run_export(args: argparse.Namespace) -> int:
-    _, creative, effects, editor_engine = get_core_services(export_root=args.output_dir)
+    _, creative, effects, editor_engine, _ = get_core_services(export_root=args.output_dir)
 
-    bp = creative.generate_reel_blueprint(title=args.title, target_duration=args.duration)
+    if args.auto_vision:
+        print(f"[*] Generating blueprint with multimodal vision ingestion for '{args.asset_id}' (snap_beats={args.snap_beats})...")
+        bp = creative.ingest_vision_intelligence(
+            asset_id=args.asset_id,
+            target_duration=args.duration,
+            snap_to_beats=args.snap_beats,
+        )
+    else:
+        bp = creative.generate_reel_blueprint(title=args.title, target_duration=args.duration)
+
     treatment = effects.generate_treatment(bp)
-
     editor_type = EditorType.DAVINCI_RESOLVE if args.target == "davinci" else EditorType.PREMIERE_PRO
 
     manifest, out_path = editor_engine.export_to_editor(

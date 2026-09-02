@@ -2,6 +2,8 @@
 
 import uuid
 from pathlib import Path
+from sae.audio.engine import AudioIntelligenceEngine
+from sae.audio.models import AudioAnalysisReport
 from sae.creative.models import (
     AudioClip,
     CameraMotionType,
@@ -19,15 +21,17 @@ from sae.vision.models import CameraAngle, ShotType, VideoAnalysisReport
 
 
 class CreativeEditingEngine:
-    """Orchestrates asset metadata and multimodal vision intelligence into timeline blueprints."""
+    """Orchestrates asset metadata, vision analytics, and audio rhythm into editing blueprints."""
 
     def __init__(
         self,
         media_manager: MediaAssetManager,
         vision_engine: AdvancedVideoIntelligenceEngine | None = None,
+        audio_engine: AudioIntelligenceEngine | None = None,
     ):
         self.media_manager = media_manager
         self.vision_engine = vision_engine or AdvancedVideoIntelligenceEngine(media_manager=media_manager)
+        self.audio_engine = audio_engine or AudioIntelligenceEngine(media_manager=media_manager)
 
     def generate_reel_blueprint(
         self,
@@ -124,9 +128,14 @@ class CreativeEditingEngine:
         style: CreativeStyleType = CreativeStyleType.DARK_MANHWA,
         format_type: PlatformFormat = PlatformFormat.VERTICAL_SHORT,
         report: VideoAnalysisReport | None = None,
+        audio_report: AudioAnalysisReport | None = None,
+        snap_to_beats: bool = False,
     ) -> EditingBlueprint:
-        """Construct an autonomous blueprint driven directly by multimodal vision analytics."""
+        """Construct an autonomous blueprint driven directly by multimodal vision analytics and beat snapping."""
         analysis = report or self.vision_engine.analyze_asset(asset_id)
+        if snap_to_beats and audio_report is None:
+            audio_report = self.audio_engine.analyze_audio_asset(asset_id=asset_id, duration_sec=target_duration)
+
         blueprint_id = f"bp_vision_{uuid.uuid4().hex[:8]}"
 
         res_map = {
@@ -143,7 +152,13 @@ class CreativeEditingEngine:
         sorted_shots = sorted(all_shots, key=lambda s: s.visual_energy, reverse=True)
 
         for idx, shot in enumerate(sorted_shots):
-            shot_duration = shot.end_sec - shot.start_sec
+            raw_duration = shot.end_sec - shot.start_sec
+            tentative_end = current_time + raw_duration
+
+            if snap_to_beats and audio_report:
+                tentative_end = audio_report.find_nearest_beat(tentative_end, tolerance_sec=0.4)
+
+            shot_duration = max(0.5, tentative_end - current_time)
             if current_time + shot_duration > target_duration:
                 shot_duration = max(0.5, target_duration - current_time)
 
@@ -162,7 +177,7 @@ class CreativeEditingEngine:
                 camera_motion=motion,
                 transition_in=transition,
                 energy_level=shot.visual_energy,
-                selection_reason=f"Vision classified: {shot.shot_type.value} shot with {shot.camera_angle.value} angle",
+                selection_reason=f"Vision classified: {shot.shot_type.value} shot with {shot.camera_angle.value} angle, Beat snapped: {snap_to_beats}",
             )
             timeline_clips.append(clip)
             current_time += shot_duration
