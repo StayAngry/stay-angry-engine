@@ -1,3 +1,4 @@
+﻿from pathlib import Path
 """Typed data structures and models for creative editing blueprints, timelines, and clips."""
 
 from datetime import datetime, timezone
@@ -100,5 +101,6 @@ class EditingBlueprint(BaseModel):
     video_clips: list[TimelineClip] = Field(default_factory=list)
     audio_clips: list[AudioClip] = Field(default_factory=list)
     color_grade: ColorGradeConfig = Field(default_factory=ColorGradeConfig)
+    subtitle_path: Path | None = None
     ai_creative_intent: str = ""
     created_at: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
