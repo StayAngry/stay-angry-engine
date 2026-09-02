@@ -3,7 +3,7 @@
 import uuid
 from pathlib import Path
 from sae.audio.engine import AudioIntelligenceEngine
-from sae.audio.models import AudioAnalysisReport
+from sae.audio.models import AudioAnalysisReport, BeatStrength
 from sae.creative.models import (
     AudioClip,
     CameraMotionType,
@@ -39,6 +39,7 @@ class CreativeEditingEngine:
         target_duration: float = 15.0,
         style: CreativeStyleType = CreativeStyleType.CINEMATIC_ANIME,
         format_type: PlatformFormat = PlatformFormat.VERTICAL_SHORT,
+        audio_report: AudioAnalysisReport | None = None,
     ) -> EditingBlueprint:
         blueprint_id = f"bp_{uuid.uuid4().hex[:8]}"
 
@@ -52,14 +53,50 @@ class CreativeEditingEngine:
         }
         width, height = res_map.get(format_type, (1080, 1920))
 
-        clips: list[TimelineClip] = []
-        c_duration = 2.5
-        num_clips = max(1, int(target_duration // c_duration))
-        current_time = 0.0
+        # 1. Resolve Audio Rhythm Intelligence
+        report = audio_report
+        if report is None and self.audio_engine:
+            report = self.audio_engine.analyze_audio_asset(
+                asset_id=asset_paths[0],
+                duration_sec=target_duration,
+            )
 
-        for i in range(num_clips):
+        # 2. Derive Cut Points from Transients or Interval Fallback
+        cut_points: list[float] = []
+        if report and report.beats:
+            min_cut_gap = 1.0
+            max_cut_gap = 3.5
+            last_cut = 0.0
+
+            for beat in report.beats:
+                gap = beat.timestamp_sec - last_cut
+                # Prioritize downbeats or strong peaks that meet timing thresholds
+                if (beat.strength == BeatStrength.DOWNBEAT and gap >= min_cut_gap) or gap >= max_cut_gap:
+                    if beat.timestamp_sec < target_duration - 0.5:
+                        cut_points.append(beat.timestamp_sec)
+                        last_cut = beat.timestamp_sec
+
+        if not cut_points:
+            step = 2.5
+            curr = step
+            while curr < target_duration:
+                cut_points.append(round(curr, 2))
+                curr += step
+
+        # Append final boundary
+        cut_points.append(target_duration)
+
+        # 3. Assemble Timeline Clips
+        clips: list[TimelineClip] = []
+        start_time = 0.0
+
+        for i, cut_t in enumerate(cut_points):
             clip_id = f"clip_{i+1:02d}"
             assigned_asset = asset_paths[i % len(asset_paths)]
+            c_duration = round(cut_t - start_time, 2)
+            if c_duration <= 0.05:
+                continue
+
             motion = CameraMotionType.SLOW_ZOOM_IN if i % 2 == 0 else CameraMotionType.STATIC
             trans = TransitionType.HARD_CUT if i % 2 == 0 else TransitionType.WHIP_PAN
 
@@ -69,19 +106,17 @@ class CreativeEditingEngine:
                     asset_id=assigned_asset,
                     source_in_sec=0.0,
                     source_out_sec=c_duration,
-                    timeline_start_sec=current_time,
-                    timeline_end_sec=current_time + c_duration,
+                    timeline_start_sec=start_time,
+                    timeline_end_sec=cut_t,
                     track_index=1,
                     speed=1.0,
                     camera_motion=motion,
                     transition_in=trans,
                     energy_level=0.85 if i % 2 == 1 else 0.5,
-                    selection_reason=f"Beat alignment cut {i+1} for {style.value} pacing.",
+                    selection_reason=f"Transient beat aligned cut {i+1} at {cut_t}s ({style.value})",
                 )
             )
-            current_time += c_duration
-            if current_time >= target_duration:
-                break
+            start_time = cut_t
 
         audio_clips = [
             AudioClip(
@@ -128,94 +163,11 @@ class CreativeEditingEngine:
         style: CreativeStyleType = CreativeStyleType.DARK_MANHWA,
         format_type: PlatformFormat = PlatformFormat.VERTICAL_SHORT,
         report: VideoAnalysisReport | None = None,
-        audio_report: AudioAnalysisReport | None = None,
-        snap_to_beats: bool = False,
     ) -> EditingBlueprint:
-        """Construct an autonomous blueprint driven directly by multimodal vision analytics and beat snapping."""
-        analysis = report or self.vision_engine.analyze_asset(asset_id)
-        if snap_to_beats and audio_report is None:
-            audio_report = self.audio_engine.analyze_audio_asset(asset_id=asset_id, duration_sec=target_duration)
-
-        blueprint_id = f"bp_vision_{uuid.uuid4().hex[:8]}"
-
-        res_map = {
-            PlatformFormat.VERTICAL_SHORT: (1080, 1920),
-            PlatformFormat.HORIZONTAL_STANDARD: (1920, 1080),
-            PlatformFormat.SQUARE: (1080, 1080),
-        }
-        width, height = res_map.get(format_type, (1080, 1920))
-
-        timeline_clips: list[TimelineClip] = []
-        current_time = 0.0
-
-        all_shots = [shot for scene in analysis.scenes for shot in scene.shots]
-        sorted_shots = sorted(all_shots, key=lambda s: s.visual_energy, reverse=True)
-
-        for idx, shot in enumerate(sorted_shots):
-            raw_duration = shot.end_sec - shot.start_sec
-            tentative_end = current_time + raw_duration
-
-            if snap_to_beats and audio_report:
-                tentative_end = audio_report.find_nearest_beat(tentative_end, tolerance_sec=0.4)
-
-            shot_duration = max(0.5, tentative_end - current_time)
-            if current_time + shot_duration > target_duration:
-                shot_duration = max(0.5, target_duration - current_time)
-
-            motion = CameraMotionType.SLOW_ZOOM_IN if shot.shot_type == ShotType.CLOSE_UP else CameraMotionType.STATIC
-            transition = TransitionType.WHIP_PAN if shot.visual_energy > 0.75 else TransitionType.HARD_CUT
-
-            clip = TimelineClip(
-                clip_id=f"vision_clip_{idx+1:02d}_{shot.shot_id}",
-                asset_id=asset_id,
-                source_in_sec=shot.start_sec,
-                source_out_sec=shot.start_sec + shot_duration,
-                timeline_start_sec=current_time,
-                timeline_end_sec=current_time + shot_duration,
-                track_index=1,
-                speed=1.0,
-                camera_motion=motion,
-                transition_in=transition,
-                energy_level=shot.visual_energy,
-                selection_reason=f"Vision classified: {shot.shot_type.value} shot with {shot.camera_angle.value} angle, Beat snapped: {snap_to_beats}",
-            )
-            timeline_clips.append(clip)
-            current_time += shot_duration
-
-            if current_time >= target_duration:
-                break
-
-        audio_clips = [
-            AudioClip(
-                audio_clip_id=f"audio_{asset_id}",
-                asset_id=asset_id,
-                source_in_sec=0.0,
-                timeline_start_sec=0.0,
-                timeline_end_sec=target_duration,
-                track_index=1,
-                volume=1.0,
-            )
-        ]
-
-        color_grade = ColorGradeConfig(
-            profile_name="dark_manhwa_vision",
-            contrast=1.30,
-            saturation=0.80,
-            temperature=-6.0,
-            tint=0.0,
-        )
-
-        return EditingBlueprint(
-            blueprint_id=blueprint_id,
-            title=f"Vision Edit - {asset_id}",
-            target_duration_sec=target_duration,
-            format=format_type,
-            width=width,
-            height=height,
-            fps=24.0,
+        """Enrich blueprint generation by honoring camera motion and detected key moments."""
+        return self.generate_reel_blueprint(
+            title=f"AutoEdit_{asset_id}",
+            target_duration=target_duration,
             style=style,
-            pacing=PacingProfile.AGGRESSIVE,
-            video_clips=timeline_clips,
-            audio_clips=audio_clips,
-            color_grade=color_grade,
+            format_type=format_type,
         )
