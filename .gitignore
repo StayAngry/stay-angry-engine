@@ -18,3 +18,7 @@ output/
 
 
 .sae_cache/
+*.sqlite
+__pycache__/
+*.pyo
+*.pyc
