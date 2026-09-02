@@ -8,3 +8,7 @@ htmlcov/
 .venv/
 cache/
 output/
+
+sae_workspace/
+output/
+
